@@ -1,6 +1,6 @@
 use node_client::UnspecifiedEnum;
 use thiserror::Error;
-use tonic::Status;
+use tonic::{Code, Status};
 
 use crate::{StoreNewTokensError, seed_phrase};
 
@@ -59,6 +59,12 @@ pub enum Error {
     Wallet(#[from] crate::wallet::Error),
     #[error(transparent)]
     RestoreNode(#[from] crate::node::RestoreNodeError),
+    #[error("invalid proof detected: {0}")]
+    InvalidProof(String),
+    #[error("proof already spent: {0}")]
+    ProofAlreadySpent(String),
+    #[error("proof amount exceeds keyset limits")]
+    ProofAmountExceeded,
 }
 
 impl From<StoreNewTokensError> for Error {
@@ -68,6 +74,21 @@ impl From<StoreNewTokensError> for Error {
             StoreNewTokensError::Nut01(error) => Error::Nut01(error),
             StoreNewTokensError::Dhke(error) => Error::Dhke(error),
         }
+    }
+}
+
+pub fn classify_grpc_error(err: &Status) -> Error {
+    match err.code() {
+        Code::InvalidArgument => {
+            if err.message().contains("invalid proof") {
+                Error::InvalidProof(err.message().to_string())
+            } else if err.message().contains("proof already spent") {
+                Error::ProofAlreadySpent(err.message().to_string())
+            } else {
+                Error::Conversion(err.message().to_string())
+            }
+        }
+        _ => err.clone().into(),
     }
 }
 

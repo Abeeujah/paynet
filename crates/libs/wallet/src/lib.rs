@@ -12,7 +12,7 @@ pub mod wallet;
 
 use std::str::FromStr;
 
-use errors::Error;
+use errors::{Error, classify_grpc_error};
 use itertools::Itertools;
 use node_client::{AcknowledgeRequest, NodeClient, hash_swap_request};
 use num_traits::{CheckedAdd, Zero};
@@ -355,8 +355,21 @@ pub async fn swap_to_have_target_amount<U: Unit>(
                 r.into_inner()
             }
             Err(e) => {
+                match classify_grpc_error(&e) {
+                    Error::InvalidProof(msg) => {
+                        log::error!("{msg}");
+                        db::proof::delete_proofs(&db_conn, &[proof_to_swap.0])?;
+                    }
+                    _ => {
+                        log::error!("Unexpected error: {}", e);
+                        db::proof::set_proof_to_state(
+                            &db_conn,
+                            proof_to_swap.0,
+                            ProofState::Unspent,
+                        )?;
+                    }
+                }
                 // TODO: delete instead when invalid input
-                db::proof::set_proof_to_state(&db_conn, proof_to_swap.0, ProofState::Unspent)?;
                 return Err(e.into());
             }
         };

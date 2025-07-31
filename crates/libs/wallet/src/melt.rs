@@ -8,8 +8,10 @@ use r2d2_sqlite::SqliteConnectionManager;
 use tonic::transport::Channel;
 
 use crate::{
-    acknowledge, convert_inputs, db, errors::Error, fetch_inputs_ids_from_db_or_node,
-    load_tokens_from_db, sync, types::ProofState,
+    acknowledge, convert_inputs, db,
+    errors::{Error, classify_grpc_error},
+    fetch_inputs_ids_from_db_or_node, load_tokens_from_db, sync,
+    types::ProofState,
 };
 
 pub async fn create_quote<U: Unit>(
@@ -68,10 +70,20 @@ pub async fn pay_quote<U: Unit>(
     let melt_response = match melt_res {
         Ok(r) => r.into_inner(),
         Err(e) => {
-            // Reset the proof state
-            // TODO: if the error is due to one of the proof being already spent, we should be removing those from db
-            // in order to not use them in the future
-            db::proof::set_proofs_to_state(&db_conn, &proofs_ids, ProofState::Unspent)?;
+            match classify_grpc_error(&e) {
+                Error::InvalidProof(msg) => {
+                    log::error!("{msg}");
+                    db::proof::delete_proofs(&db_conn, &proofs_ids)?;
+                }
+                Error::ProofAlreadySpent(msg) => {
+                    log::error!("{msg}");
+                    db::proof::set_proofs_to_state(&db_conn, &proofs_ids, ProofState::Spent)?;
+                }
+                _ => {
+                    log::error!("Unexpected error: {}", e);
+                    db::proof::set_proofs_to_state(&db_conn, &proofs_ids, ProofState::Unspent)?;
+                }
+            }
             return Err(e.into());
         }
     };
